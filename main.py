@@ -21,6 +21,11 @@ from utils import (
     prepare_video_frames,
 )
 from verifiers import SUPPORTED_VERIFIERS
+from search_algorithms import (
+    RandomSearch,
+    ZeroOrderSearch,
+    EvolutionarySearch,
+)
 
 # Non-configurable constants
 TOPK = 1  # Always selecting the top-1 noise for the next round
@@ -241,70 +246,33 @@ def main():
         raise ValueError("Verifier class evaluated to be `None`. Make sure the dependencies are installed properly.")
 
     verifier = verifier_cls(**verifier_args)
+    
+    print(config)
+    def get_search_algorithm(search_method, config):
+        if search_method == "random":
+            return RandomSearch(config)
+        elif search_method == "zero-order":
+            return ZeroOrderSearch(config)
+        elif search_method == "evolutionary":
+            return EvolutionarySearch(config)
+        else:
+            raise ValueError(f"Unsupported search method: {search_method}")
+
+    # In your main function:
+    search_method = config["search_args"].get("search_method", "random")
+    search_algo = get_search_algorithm(search_method, config)
 
     # === Main loop: For each prompt and each search round ===
     pipeline_call_args = config["pipeline_call_args"].copy()
     for prompt in tqdm(prompts, desc="Processing prompts"):
-        search_round = 1
-
-        # For zero-order search, we store the best datapoint per round.
-        best_datapoint_per_round = {}
-
-        while search_round <= search_rounds:
-            # Determine the number of noise samples.
-            if search_method == "zero-order":
-                num_noises_to_sample = 1
-            else:
-                num_noises_to_sample = 2**search_round
-
+        previous_data = None
+        for search_round in range(1, config["search_args"]["search_rounds"] + 1):
             print(f"\n=== Prompt: {prompt} | Round: {search_round} ===")
-
-            # --- Generate noise pool ---
-            should_regenate_noise = True
-            previous_round = search_round - 1
-            if previous_round in best_datapoint_per_round:
-                was_improvement = best_datapoint_per_round[previous_round]["neighbors_improvement"]
-                if was_improvement:
-                    should_regenate_noise = False
-
-            # For subsequent rounds in zero-order: use best noise from previous round.
-            # This happens ONLY if there was an improvement with the neighbors in the
-            # previous round, otherwise round is progressed with newly sampled noise.
-            if should_regenate_noise:
-                # Standard noise sampling.
-                if search_method == "zero-order" and search_round != 1:
-                    print("Regenerating base noise because the previous round was rejected.")
-                    
-                noises = get_noises(
-                    max_seed=MAX_SEED,
-                    num_samples=num_noises_to_sample,
-                    dtype=torch_dtype,
-                    fn=get_latent_prep_fn(pipeline_name),
-                    **pipeline_call_args,
-                )
-            else:
-                if best_datapoint_per_round[previous_round]:
-                    if best_datapoint_per_round[previous_round]["neighbors_improvement"]:
-                        print("Using the best noise from the previous round.")
-                        prev_dp = best_datapoint_per_round[previous_round]
-                        noises = {int(prev_dp["best_noise_seed"]): prev_dp["best_noise"]}
-
-            if search_method == "zero-order":
-                # Process the noise to generate neighbors.
-                base_seed, base_noise = next(iter(noises.items()))
-                neighbors = generate_neighbors(
-                    base_noise, threshold=search_args["threshold"], num_neighbors=search_args["num_neighbors"]
-                ).squeeze(0)
-                # Concatenate the base noise with its neighbors.
-                neighbors_and_noise = torch.cat([base_noise, neighbors], dim=0)
-                new_noises = {}
-                for i, noise_tensor in enumerate(neighbors_and_noise):
-                    new_noises[base_seed + i] = noise_tensor.unsqueeze(0)
-                noises = new_noises
-
-            print(f"Number of noise samples for prompt '{prompt}': {len(noises)}")
-
-            # --- Sampling, verifying, and saving artifacts ---
+            search_algo.config["num_samples"] = 2 ** search_round if search_method == "random" else 1
+            search_algo.config["torch_dtype"] = torch_dtype
+            search_algo.config["pipeline_name"] = pipeline_name
+            print(search_algo.config)
+            noises = search_algo.generate_noise_candidates(previous_data)
             datapoint = sample(
                 noises=noises,
                 prompt=prompt,
@@ -315,13 +283,8 @@ def main():
                 root_dir=output_dir,
                 config=config,
             )
-
-            if search_method == "zero-order":
-                # Update the best datapoint for zero-order.
-                if datapoint["neighbors_improvement"]:
-                    best_datapoint_per_round[search_round] = datapoint
-
-            search_round += 1
+            # Update previous_data if needed (for zero-order or evolutionary strategies)
+            previous_data = datapoint
 
 
 if __name__ == "__main__":
