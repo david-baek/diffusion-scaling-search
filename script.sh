@@ -6,4 +6,4 @@
 export GEMINI_API_KEY=YOUR_API_KEY_HERE
 
 python main.py \
-  --num_prompts=5
+  --num_prompts=1

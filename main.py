@@ -27,8 +27,10 @@ from search_algorithms import (
     EvolutionarySearch,
 )
 
+from drawbench_eval import compute_single_clipscore
+
 # Non-configurable constants
-TOPK = 1  # Always selecting the top-1 noise for the next round
+TOPK = 3  # Always selecting the top-1 noise for the next round
 MAX_SEED = np.iinfo(np.int32).max  # To generate random seeds
 
 
@@ -162,6 +164,7 @@ def sample(
         "best_noise_seed": topk_scores[0]["seed"],
         "best_noise": topk_scores[0]["noise"],
         "best_score": topk_scores[0][choice_of_metric],
+        "top10_noise": [topk_scores[i]["noise"] for i in range(min(10, len(topk_scores)))],
         "choice_of_metric": choice_of_metric,
         "best_img_path": best_img_path,
     }
@@ -176,11 +179,15 @@ def sample(
     # Serialize.
     if search_method == "zero-order":
         if datapoint["neighbors_improvement"]:
-            serialize_artifacts(images_info, prompt, search_round, root_dir, datapoint, **export_args)
+            datapoint_new = datapoint.copy()
+            datapoint_new.pop("top10_noise", None)
+            serialize_artifacts(images_info, prompt, search_round, root_dir, datapoint_new, **export_args)
         else:
             print("Skipping serialization as there was no improvement in this round.")
-    elif search_method == "random":
-        serialize_artifacts(images_info, prompt, search_round, root_dir, datapoint, **export_args)
+    elif search_method == "random" or search_method == "evolutionary":
+        datapoint_new = datapoint.copy()
+        datapoint_new.pop("top10_noise", None)
+        serialize_artifacts(images_info, prompt, search_round, root_dir, datapoint_new, **export_args)
 
     return datapoint
 
@@ -238,6 +245,16 @@ def main():
     if not config.get("use_low_gpu_vram", False):
         pipe = pipe.to("cuda:0")
     pipe.set_progress_bar_config(disable=True)
+    
+    # ----- NFE Counter using Forward Hook -----
+
+    def counting_hook(module, input, output):
+        counting_hook.counter += 1
+        
+    counting_hook.counter = 0
+
+    # Register the hook on the UNet inside the pipeline.
+    hook_handle = pipe.unet.register_forward_hook(counting_hook)
 
     # === Load verifier model ===
     verifier_args = config["verifier_args"]
@@ -261,14 +278,18 @@ def main():
     # In your main function:
     search_method = config["search_args"].get("search_method", "random")
     search_algo = get_search_algorithm(search_method, config)
+    
+    all_nfe_data = {}
 
     # === Main loop: For each prompt and each search round ===
     pipeline_call_args = config["pipeline_call_args"].copy()
     for prompt in tqdm(prompts, desc="Processing prompts"):
         previous_data = None
+        counting_hook.counter = 0
+        all_nfe_data[prompt] = {}
         for search_round in range(1, config["search_args"]["search_rounds"] + 1):
             print(f"\n=== Prompt: {prompt} | Round: {search_round} ===")
-            search_algo.config["num_samples"] = 2 ** search_round if search_method == "random" else 1
+            search_algo.config["num_samples"] = 2 ** search_round if (search_method == "random" or search_method == "evolutionary") else 1
             search_algo.config["torch_dtype"] = torch_dtype
             search_algo.config["pipeline_name"] = pipeline_name
             print(search_algo.config)
@@ -284,8 +305,17 @@ def main():
                 config=config,
             )
             # Update previous_data if needed (for zero-order or evolutionary strategies)
+            print(f"Total function evaluations (NFEs) so far: {counting_hook.counter}")
+            
+            all_nfe_data[prompt][search_round] = {}
+            all_nfe_data[prompt][search_round]["NFE"] = str(counting_hook.counter)
+            all_nfe_data[prompt][search_round]["clip_score"] = str(compute_single_clipscore(datapoint["best_img_path"], prompt))
             previous_data = datapoint
+            print(all_nfe_data)
+            with open(os.path.join(output_dir, "all_nfe_data.json"), "w") as f:
+                json.dump(all_nfe_data, f, indent=4)
 
+    
 
 if __name__ == "__main__":
     main()

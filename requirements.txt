@@ -11,3 +11,4 @@ datasets
 torchvision
 torchmetrics
 torch-fidelity
+openai-clip

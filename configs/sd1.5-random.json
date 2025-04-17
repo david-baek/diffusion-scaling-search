@@ -11,9 +11,9 @@
         "choice_of_metric": "overall_score"
     },
     "search_args": {
-        "search_method": "evolutionary",
-        "search_rounds": 5,
-        "threshold": 0.95,
-        "num_neighbors": 4
+        "search_method": "random",
+        "search_rounds": 8,
+        "threshold": 0.5,
+        "num_neighbors": 5
     }
 }
