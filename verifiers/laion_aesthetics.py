@@ -39,12 +39,12 @@ class LAIONAestheticVerifier(BaseVerifier):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.dtype = kwargs.pop("dtype", torch.float32)
 
-        self.clip = CLIPVisionModelWithProjection.from_pretrained("openai/clip-vit-large-patch14").eval()
+        self.clip = CLIPVisionModelWithProjection.from_pretrained("/home/gridsan/asreenivasan/diffusion-scaling-search/clip-vit-large-patch14", local_files_only=True).eval()
         self.clip.to(self.device, self.dtype)
-        self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+        self.processor = CLIPProcessor.from_pretrained("/home/gridsan/asreenivasan/diffusion-scaling-search/clip-vit-large-patch14", local_files_only=True)
 
         self.mlp = MLP()
-        path = hf_hub_download("trl-lib/ddpo-aesthetic-predictor", "aesthetic-model.pth")
+        path = os.path.join("/home/gridsan/asreenivasan/diffusion-scaling-search/ddpo-aesthetic-predictor", "aesthetic-model.pth")
         state_dict = torch.load(path, weights_only=True, map_location=torch.device("cpu"))
         self.mlp.load_state_dict(state_dict)
         self.mlp.to(self.device, self.dtype)

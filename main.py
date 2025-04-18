@@ -25,6 +25,7 @@ from search_algorithms import (
     RandomSearch,
     ZeroOrderSearch,
     EvolutionarySearch,
+    RejectionSamplingSearch,
 )
 
 from drawbench_eval import compute_single_clipscore
@@ -55,6 +56,19 @@ def sample(
     choice_of_metric = verifier_args.get("choice_of_metric", None)
     verifier_to_use = verifier_args.get("name", "gemini")
     search_args = config.get("search_args", None)
+
+    datapoint = {
+        "prompt": prompt,
+        "search_round": search_round,
+        "num_noises": len(noises),
+        "best_noise_seed": None,
+        "best_noise": None,
+        "best_score": None,
+        "top10_noise": [],
+        "choice_of_metric": choice_of_metric,
+        "best_img_path": "",
+        "acceptance_rate": 0.0  # Add default value
+    }
 
     images_for_prompt = []
     noises_used = []
@@ -147,7 +161,24 @@ def sample(
             return x[choice_of_metric]["score"]
         return x[choice_of_metric]
 
-    sorted_list = sorted(results, key=lambda x: f(x), reverse=True)
+    # Add rejection sampling search filtering
+    search_method = search_args.get("search_method", "random")
+    if search_method == "rejection":
+        acceptance_threshold = config["search_args"].get("initial_threshold", 0.5)
+        accepted_samples = [
+            res for res in results
+            if res[choice_of_metric] >= acceptance_threshold
+        ]
+        acceptance_rate = len(accepted_samples)/len(results) if results else 0
+        datapoint["acceptance_rate"] = acceptance_rate
+        if accepted_samples:
+            sorted_list = sorted(accepted_samples, key=lambda x: f(x), reverse=True)
+        else:
+            # Fallback to best of rejected samples
+            sorted_list = sorted(results, key=lambda x: f(x), reverse=True)
+    else:
+        sorted_list = sorted(results, key=lambda x: f(x), reverse=True)
+
     topk_scores = sorted_list[:topk]
 
     # Print debug information.
@@ -184,7 +215,7 @@ def sample(
             serialize_artifacts(images_info, prompt, search_round, root_dir, datapoint_new, **export_args)
         else:
             print("Skipping serialization as there was no improvement in this round.")
-    elif search_method == "random" or search_method == "evolutionary":
+    elif search_method in ["random", "evolutionary", "rejection"]:
         datapoint_new = datapoint.copy()
         datapoint_new.pop("top10_noise", None)
         serialize_artifacts(images_info, prompt, search_round, root_dir, datapoint_new, **export_args)
@@ -241,7 +272,7 @@ def main():
 
         vae = AutoencoderKLWan.from_pretrained(pipeline_name, subfolder="vae", torch_dtype=torch.float32)
         fp_kwargs.update({"vae": vae})
-    pipe = DiffusionPipeline.from_pretrained(**fp_kwargs)
+    pipe = DiffusionPipeline.from_pretrained(**fp_kwargs, local_files_only=True) #IF APPLICABLE!
     if not config.get("use_low_gpu_vram", False):
         pipe = pipe.to("cuda:0")
     pipe.set_progress_bar_config(disable=True)
@@ -249,12 +280,17 @@ def main():
     # ----- NFE Counter using Forward Hook -----
 
     def counting_hook(module, input, output):
-        counting_hook.counter += 1
+        # Only count UNet forward passes during actual image generation
+        if not hasattr(counting_hook, "sampling_phase"):
+            counting_hook.counter += 1
         
     counting_hook.counter = 0
 
     # Register the hook on the UNet inside the pipeline.
-    hook_handle = pipe.unet.register_forward_hook(counting_hook)
+    if hasattr(pipe, 'unet'):
+        hook_handle = pipe.unet.register_forward_hook(counting_hook)
+    elif hasattr(pipe, 'transformer'):
+        hook_handle = pipe.transformer.register_forward_hook(counting_hook)
 
     # === Load verifier model ===
     verifier_args = config["verifier_args"]
@@ -272,6 +308,8 @@ def main():
             return ZeroOrderSearch(config)
         elif search_method == "evolutionary":
             return EvolutionarySearch(config)
+        elif search_method == "rejection":
+            return RejectionSamplingSearch(config)
         else:
             raise ValueError(f"Unsupported search method: {search_method}")
 
@@ -289,7 +327,15 @@ def main():
         all_nfe_data[prompt] = {}
         for search_round in range(1, config["search_args"]["search_rounds"] + 1):
             print(f"\n=== Prompt: {prompt} | Round: {search_round} ===")
-            search_algo.config["num_samples"] = 2 ** search_round if (search_method == "random" or search_method == "evolutionary") else 1
+
+
+            if search_method in ["random", "evolutionary"]:
+                search_algo.config["num_samples"] = 2 ** search_round
+            elif search_method == "rejection":
+                search_algo.config["num_samples"] = config["search_args"].get("num_samples", 10)
+            else:
+                search_algo.config["num_samples"] = 1
+
             search_algo.config["torch_dtype"] = torch_dtype
             search_algo.config["pipeline_name"] = pipeline_name
             print(search_algo.config)

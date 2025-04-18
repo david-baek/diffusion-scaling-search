@@ -52,7 +52,7 @@ def compute_clipscore(json_folder, batch_size=8, device='cuda'):
     - avg_clipscore (float): Average cosine similarity between image and text features.
     """
     # Load the CLIP model and its preprocessing transform.
-    model, preprocess = clip.load("ViT-B/32", device=device)
+    model, preprocess = clip.load("/home/gridsan/asreenivasan/ViT-B-32.pt", device=device)
     model.eval()  # Set the model to evaluation mode
 
     # Prepare the dataset using the CLIP preprocessing transformation.
@@ -110,7 +110,7 @@ def compute_single_clipscore(image_path, text_prompt, device=None):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     # Load CLIP model and preprocessing transform
-    model, preprocess = clip.load("ViT-B/32", device=device)
+    model, preprocess = clip.load("/home/gridsan/asreenivasan/diffusion-scaling-search/ViT-B-32.pt", device=device)
     model.eval()
     
     # Load and preprocess the image

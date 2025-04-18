@@ -117,3 +117,60 @@ class EvolutionarySearch(SearchAlgorithm):
         self.current_generation += 1
         print("LENGTH OF NEW POPULATION: ", len(new_population))
         return new_population
+
+class RejectionSamplingSearch(SearchAlgorithm):
+    def __init__(self, config):
+        super().__init__(config)
+        self.best_noise = None
+        self.adaptive_threshold = 0.5  # Initial acceptance threshold
+        self.proposal_std = 0.3  # Initial noise perturbation std
+        self.min_std = 0.1
+        self.acceptance_history = []
+
+    def generate_noise_candidates(self, previous_data=None):
+        """Generates noise candidates using adaptive rejection sampling"""
+        latent_prep_fn = get_latent_prep_fn(self.config["pipeline_name"])
+        num_samples = self.config["num_samples"]
+
+        if previous_data:
+            # Update proposal based on previous round's best noise
+            self.best_noise = previous_data["best_noise"]
+            self._update_proposal_params(previous_data)
+
+        # Generate base candidates
+        if self.best_noise is None:
+            base_noise = get_noises(
+                max_seed=MAX_SEED,
+                num_samples=num_samples,
+                dtype=self.config["torch_dtype"],
+                fn=latent_prep_fn,
+                **self.config["pipeline_call_args"],
+            )
+        else:
+            # Generate candidates around best noise with adaptive std
+            base_noise = self._generate_perturbed_samples(num_samples)
+
+        return base_noise
+
+    def _generate_perturbed_samples(self, num_samples):
+        """Generates samples by perturbing the best noise with adaptive Gaussian noise"""
+        samples = {}
+        for i in range(num_samples):
+            perturbation = torch.randn_like(self.best_noise) * self.proposal_std
+            samples[random.randint(0, MAX_SEED)] = torch.clamp(self.best_noise + perturbation, -3, 3)
+        return samples
+
+    def _update_proposal_params(self, previous_data):
+        """Adaptively adjusts proposal distribution parameters"""
+        acceptance_rate = previous_data.get("acceptance_rate", 0)
+        self.acceptance_history.append(acceptance_rate)
+
+        # Adjust threshold (simple moving average)
+        if len(self.acceptance_history) > 3:
+            self.adaptive_threshold *= 0.95 + 0.05 * np.mean(self.acceptance_history[-3:])
+
+        # Adjust noise std based on acceptance history
+        if acceptance_rate > 0.3:
+            self.proposal_std = max(self.min_std, self.proposal_std * 0.95)
+        else:
+            self.proposal_std = min(0.5, self.proposal_std * 1.05)

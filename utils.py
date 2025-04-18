@@ -19,9 +19,11 @@ from diffusers.utils import export_to_video
 
 TORCH_DTYPE_MAP = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
 MODEL_NAME_MAP = {
+    "/home/gridsan/asreenivasan/diffusion-scaling-search/FLUX.1-dev": "flux.1-dev",
     "black-forest-labs/FLUX.1-dev": "flux.1-dev",
     "PixArt-alpha/PixArt-Sigma-XL-2-1024-MS": "pixart-sigma-1024-ms",
     "stabilityai/stable-diffusion-xl-base-1.0": "sdxl-base",
+    "/home/gridsan/asreenivasan/diffusion-scaling-search/stable-diffusion-v1-5": "sd-v1.5",
     "stable-diffusion-v1-5/stable-diffusion-v1-5": "sd-v1.5",
     "a-r-r-o-w/LTX-Video-0.9.1-diffusers": "ltx-video",
     "Lightricks/LTX-Video": "ltx-video",
@@ -111,7 +113,7 @@ def _validate_verifier_args(config):
 def _validate_search_args(config):
     search_args = config["search_args"]
     search_method = search_args["search_method"]
-    supported_search_methods = ["random", "zero-order", "evolutionary"]
+    supported_search_methods = ["random", "zero-order", "evolutionary", "rejection"]
 
     assert (
         search_method in supported_search_methods
@@ -212,9 +214,11 @@ def prepare_latents(
 
 def get_latent_prep_fn(pretrained_model_name_or_path: str) -> callable:
     fn_map = {
+        "/home/gridsan/asreenivasan/diffusion-scaling-search/FLUX.1-dev": prepare_latents_for_flux,
         "black-forest-labs/FLUX.1-dev": prepare_latents_for_flux,
         "PixArt-alpha/PixArt-Sigma-XL-2-1024-MS": prepare_latents,
         "stabilityai/stable-diffusion-xl-base-1.0": prepare_latents,
+        "/home/gridsan/asreenivasan/diffusion-scaling-search/stable-diffusion-v1-5": prepare_latents,
         "stable-diffusion-v1-5/stable-diffusion-v1-5": prepare_latents,
         "a-r-r-o-w/LTX-Video-0.9.1-diffusers": prepare_latents_ltx,
         "Lightricks/LTX-Video": prepare_latents_ltx,
