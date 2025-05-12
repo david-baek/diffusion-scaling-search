@@ -3,7 +3,29 @@ import json
 import torch
 from torch.utils.data import DataLoader, Dataset
 from PIL import Image
-import clip  # Ensure you have the OpenAI CLIP package installed
+import clip
+import torch.nn as nn
+import torchvision.transforms as transforms
+from transformers import CLIPVisionModelWithProjection, CLIPProcessor
+from huggingface_hub import hf_hub_download
+import numpy as np
+
+class MLP(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.Linear(768, 1024),
+            nn.Dropout(0.2),
+            nn.Linear(1024, 128),
+            nn.Dropout(0.2),
+            nn.Linear(128, 64),
+            nn.Dropout(0.1),
+            nn.Linear(64, 16),
+            nn.Linear(16, 1),
+        )
+
+    def forward(self, embed):
+        return self.layers(embed)
 
 class GeneratedImagesWithTextDataset(Dataset):
     """
@@ -27,7 +49,7 @@ class GeneratedImagesWithTextDataset(Dataset):
                 prompt = data.get('prompt')
                 if img_path and os.path.exists(img_path) and prompt:
                     self.samples.append((img_path, prompt))
-                    
+
     def __len__(self):
         return len(self.samples)
 
@@ -36,110 +58,216 @@ class GeneratedImagesWithTextDataset(Dataset):
         image = Image.open(img_path).convert('RGB')
         if self.transform:
             image = self.transform(image)
-        return image, prompt
+        return image, prompt, img_path  # Added img_path to return value
 
-def compute_clipscore(json_folder, batch_size=8, device='cuda'):
+def load_aesthetic_model(device='cuda'):
+    """Load the LAION aesthetic predictor model"""
+    model_path = hf_hub_download("trl-lib/ddpo-aesthetic-predictor", "aesthetic-model.pth")
+
+    model = MLP()
+    model.load_state_dict(torch.load(model_path, weights_only=True, map_location=device))
+    model.to(device)
+    model.eval()
+    return model
+
+def compute_scores(json_folder, batch_size=8, device='cuda'):
     """
-    Compute the average CLIPscore for a set of generated images (with text prompts)
-    saved in JSON files.
-    
+    Compute both CLIP scores and aesthetic scores for images in JSON files.
+
     Parameters:
     - json_folder (str): Path to the folder containing JSON files.
     - batch_size (int): Number of samples to process at once.
-    - device (str): Device to run computations on (e.g., 'cuda' or 'cpu').
-    
-    Returns:
-    - avg_clipscore (float): Average cosine similarity between image and text features.
-    """
-    # Load the CLIP model and its preprocessing transform.
-    model, preprocess = clip.load("/home/gridsan/asreenivasan/ViT-B-32.pt", device=device)
-    model.eval()  # Set the model to evaluation mode
+    - device (str): Device to run computations on.
 
-    # Prepare the dataset using the CLIP preprocessing transformation.
+    Returns:
+    - tuple: (avg_clipscore, avg_aesthetic_score, detailed_scores)
+    """
+    # Load models
+    clip_model, preprocess = clip.load("ViT-B/32", device=device)
+    clip_model.eval()
+    aesthetic_model = load_aesthetic_model(device)
+
+    # Prepare the dataset using the CLIP preprocessing transformation
     dataset = GeneratedImagesWithTextDataset(json_folder, transform=preprocess)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
-    clip_scores = []  # To store cosine similarity scores for each image-text pair
+    # Store scores
+    clip_scores = []
+    aesthetic_scores = []
+    detailed_scores = []  # For per-image results
 
-    # Iterate over the dataset in batches.
-    for images, texts in dataloader:
+    # Process batches
+    for images, texts, img_paths in dataloader:
         images = images.to(device)
-        # Tokenize the list of text prompts; clip.tokenize handles a list of strings.
         text_tokens = clip.tokenize(texts).to(device)
 
         with torch.no_grad():
-            # Compute image and text features.
-            image_features = model.encode_image(images)
-            text_features = model.encode_text(text_tokens)
+            # Get CLIP features
+            image_features = clip_model.encode_image(images)
+            text_features = clip_model.encode_text(text_tokens)
 
-        # Normalize features to unit vectors.
-        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+            # Normalize features for CLIP score
+            image_features_norm = image_features / image_features.norm(dim=-1, keepdim=True)
+            text_features_norm = text_features / text_features.norm(dim=-1, keepdim=True)
 
-        # Calculate the cosine similarity for each image-text pair.
-        # Since features are normalized, the dot product equals cosine similarity.
-        cosine_sim = (image_features * text_features).sum(dim=-1)
-        clip_scores.extend(cosine_sim.cpu().tolist())
-        
-    print("CLIP scores", clip_scores)
+            # Calculate CLIP scores
+            cosine_sim = (image_features_norm * text_features_norm).sum(dim=-1)
+            clip_score_batch = 2.5 * torch.clamp(cosine_sim, min=0)  # Scale CLIP scores
 
-    # Compute the average CLIPscore over all samples.
+            # Calculate aesthetic scores
+            aesthetic_score_batch = aesthetic_model(image_features).squeeze()
+
+        # Store scores
+        clip_scores.extend(clip_score_batch.cpu().tolist())
+        aesthetic_scores.extend(aesthetic_score_batch.cpu().tolist())
+
+        # Store detailed results
+        for i in range(len(images)):
+            detailed_scores.append({
+                "image_path": img_paths[i],
+                "prompt": texts[i],
+                "clip_score": clip_score_batch[i].item(),
+                "aesthetic_score": aesthetic_score_batch[i].item()
+            })
+
+    # Compute averages
     avg_clipscore = sum(clip_scores) / len(clip_scores)
-    return avg_clipscore
+    avg_aesthetic_score = sum(aesthetic_scores) / len(aesthetic_scores)
+
+    print(f"Average CLIP Score: {avg_clipscore:.4f}")
+    print(f"Average Aesthetic Score: {avg_aesthetic_score:.4f}")
+
+    return avg_clipscore, avg_aesthetic_score, detailed_scores
 
 def compute_single_clipscore(image_path, text_prompt, device=None):
     """
     Compute the CLIPscore for a single image and text prompt.
 
-    The CLIPscore is a measure of similarity between an image and a text prompt,
-    calculated as the cosine similarity between their feature embeddings produced
-    by the CLIP model.
-
     Parameters:
     - image_path (str): Path to the image file.
     - text_prompt (str): The text prompt associated with the image.
-    - device (str, optional): Device to run computations on. Defaults to 'cuda' 
-      if available, else 'cpu'.
+    - device (str, optional): Device to run computations on.
 
     Returns:
-    - clipscore (float): The cosine similarity between the image and text features,
-      ranging from -1 to 1 (typically 0 to 1 for meaningful pairs).
+    - clipscore (float): Scaled cosine similarity between image and text features.
     """
+    def _truncate_prompt(prompt, max_length=77):
+        """Truncate prompt to fit CLIP's context length."""
+        words = prompt.split()
+        if len(words) == 0:
+            return prompt
+
+        # Start with the full prompt and remove words from the end until it fits
+        for end in range(len(words), 0, -1):
+            candidate = " ".join(words[:end])
+            try:
+                tokens = clip.tokenize([candidate])
+                return candidate
+            except RuntimeError:
+                # If tokenization fails, try a shorter prompt
+                continue
+
+        # If even one word is too long, return an empty string
+        return ""
+
     # Set device to 'cuda' if available and not specified
     if device is None:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
+
     # Load CLIP model and preprocessing transform
-    model, preprocess = clip.load("/home/gridsan/asreenivasan/diffusion-scaling-search/ViT-B-32.pt", device=device)
+    model, preprocess = clip.load("ViT-B/32", device=device)
     model.eval()
-    
+
     # Load and preprocess the image
-    image = Image.open(image_path)
+    image = Image.open(image_path).convert('RGB')
     image = preprocess(image).unsqueeze(0).to(device)  # Add batch dimension
-    
+
     # Tokenize the text prompt
+    text_prompt = _truncate_prompt(text_prompt)
     text_tokens = clip.tokenize([text_prompt]).to(device)
-    
+
     # Compute features
     with torch.no_grad():
         image_features = model.encode_image(image)
         text_features = model.encode_text(text_tokens)
-        
-    print("SHape:", image_features.shape, text_features.shape)
-    
+
     # Normalize features
     image_features = image_features / image_features.norm(dim=-1, keepdim=True)
     text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-    
+
     # Calculate cosine similarity
     cosine_sim = (image_features * text_features).sum(dim=-1).item()
-    
+
     return 2.5 * max(cosine_sim, 0)
 
-# Example usage:
+def compute_aesthetic_score(image_path, device=None):
+    """
+    Compute the aesthetic score for a single image.
+
+    Parameters:
+    - image_path (str): Path to the image file.
+    - device (str, optional): Device to run computations on.
+
+    Returns:
+    - aesthetic_score (float): The predicted aesthetic score (typically in 1-10 range).
+    """
+    if device is None:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    # Load CLIP vision model
+    clip_model_path = "openai/clip-vit-large-patch14"
+    clip = CLIPVisionModelWithProjection.from_pretrained(clip_model_path)
+    clip.eval()
+    clip.to(device)
+
+    # Load processor
+    processor = CLIPProcessor.from_pretrained(clip_model_path)
+
+    # Load aesthetic MLP
+    mlp = MLP()
+    model_path = hf_hub_download("trl-lib/ddpo-aesthetic-predictor", "aesthetic-model.pth")
+    state_dict = torch.load(model_path, weights_only=True, map_location=torch.device("cpu"))
+    mlp.load_state_dict(state_dict)
+    mlp.eval()
+    mlp.to(device)
+
+    # Load and preprocess image
+    image = Image.open(image_path).convert('RGB')
+    inputs = processor(images=image, return_tensors="pt")
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+
+    # Compute aesthetic score
+    with torch.no_grad():
+        # Get CLIP embeddings
+        embed = clip(**inputs)[0]
+        # Normalize embedding
+        embed = embed / torch.linalg.vector_norm(embed, dim=-1, keepdim=True)
+        # Compute aesthetic score
+        score = mlp(embed).item()
+
+    return score
+
+# Example usage
 if __name__ == '__main__':
-    json_folder = './output/sd-v1.5/gemini/overall_score/20250401_212426/'  # Replace with your path to JSON files
-    batch_size = 8  # Adjust batch size depending on your GPU/CPU memory
+    json_folder = './output/sd-v1.5/gemini/overall_score/20250401_212426/'
+    batch_size = 8
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    clip_score = compute_clipscore(json_folder, batch_size=batch_size, device=device)
-    print(f"Average CLIPScore: {clip_score:.4f}")
+
+    # Compute both scores for all images
+    avg_clip, avg_aesthetic, detailed = compute_scores(json_folder, batch_size=batch_size, device=device)
+    print(f"Average CLIPScore: {avg_clip:.4f}")
+    print(f"Average Aesthetic Score: {avg_aesthetic:.4f}")
+
+    # Save detailed results to JSON
+    with open('image_scores.json', 'w') as f:
+        json.dump(detailed, f, indent=2)
+
+    # Example for a single image
+    image_path = detailed[0]["image_path"]
+    prompt = detailed[0]["prompt"]
+
+    clip_score = compute_single_clipscore(image_path, prompt, device)
+    aesthetic_score = compute_aesthetic_score(image_path, device)
+
+    print(f"Single image CLIP score: {clip_score:.4f}")
+    print(f"Single image aesthetic score: {aesthetic_score:.4f}")

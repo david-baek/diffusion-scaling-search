@@ -19,11 +19,9 @@ from diffusers.utils import export_to_video
 
 TORCH_DTYPE_MAP = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
 MODEL_NAME_MAP = {
-    "/home/gridsan/asreenivasan/diffusion-scaling-search/FLUX.1-dev": "flux.1-dev",
     "black-forest-labs/FLUX.1-dev": "flux.1-dev",
     "PixArt-alpha/PixArt-Sigma-XL-2-1024-MS": "pixart-sigma-1024-ms",
     "stabilityai/stable-diffusion-xl-base-1.0": "sdxl-base",
-    "/home/gridsan/asreenivasan/diffusion-scaling-search/stable-diffusion-v1-5": "sd-v1.5",
     "stable-diffusion-v1-5/stable-diffusion-v1-5": "sd-v1.5",
     "a-r-r-o-w/LTX-Video-0.9.1-diffusers": "ltx-video",
     "Lightricks/LTX-Video": "ltx-video",
@@ -214,11 +212,9 @@ def prepare_latents(
 
 def get_latent_prep_fn(pretrained_model_name_or_path: str) -> callable:
     fn_map = {
-        "/home/gridsan/asreenivasan/diffusion-scaling-search/FLUX.1-dev": prepare_latents_for_flux,
         "black-forest-labs/FLUX.1-dev": prepare_latents_for_flux,
         "PixArt-alpha/PixArt-Sigma-XL-2-1024-MS": prepare_latents,
         "stabilityai/stable-diffusion-xl-base-1.0": prepare_latents,
-        "/home/gridsan/asreenivasan/diffusion-scaling-search/stable-diffusion-v1-5": prepare_latents,
         "stable-diffusion-v1-5/stable-diffusion-v1-5": prepare_latents,
         "a-r-r-o-w/LTX-Video-0.9.1-diffusers": prepare_latents_ltx,
         "Lightricks/LTX-Video": prepare_latents_ltx,
@@ -380,9 +376,19 @@ def serialize_artifacts(
 
     # Save the best datapoint config as a JSON file.
     best_json_filename = datapoint["best_img_path"].replace(".png", ".json").replace(".mp4", ".json")
+
+    # Define custom JSON serializer
+    def json_serializer(obj):
+        if isinstance(obj, (torch.Tensor, np.ndarray)):
+            return obj.tolist() if hasattr(obj, 'tolist') else float(obj)
+        elif hasattr(obj, 'dtype') and np.issubdtype(obj.dtype, np.floating):
+            return float(obj)  # Convert numpy/torch float types to Python float
+        raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
     with open(best_json_filename, "w") as f:
         # Remove the noise tensor (or any non-serializable object) from the JSON.
         datapoint_copy = datapoint.copy()
         datapoint_copy.pop("best_noise", None)
-        json.dump(datapoint_copy, f, indent=4)
+        json.dump(datapoint_copy, f, indent=4, default=json_serializer)
+
     print(f"Serialized artifacts to {root_dir}.")

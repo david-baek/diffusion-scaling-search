@@ -14,7 +14,7 @@ sys.path.insert(0, current_dir)
 
 from base_verifier import BaseVerifier
 
-DEFAULT_QWEN_MODEL_ID = "/home/gridsan/asreenivasan/diffusion-scaling-search/Qwen2.5-VL-7B-Instruct"
+DEFAULT_QWEN_MODEL_ID = "Qwen/Qwen2.5-VL-7B-Instruct"
 # Optional device map that one can use to let `transformers` share a single GPU and CPU.
 DEVICE_MAP = {
     "visual": 1,
@@ -142,6 +142,8 @@ class QwenVerifier(BaseVerifier):
     def _prepare_model_kwargs(self, **kwargs):
         model_kwargs = {"torch_dtype": torch.bfloat16}
         use_low_gpu_vram = kwargs.get("use_low_gpu_vram", False)
-        if use_low_gpu_vram:
+        if not use_low_gpu_vram:
+            model_kwargs.update({"attn_implementation": "flash_attention_2"})
+        else:
             model_kwargs.update({"device_map": "auto"})
         return model_kwargs

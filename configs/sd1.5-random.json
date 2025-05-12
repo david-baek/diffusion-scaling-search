@@ -6,14 +6,12 @@
         "width": 512
     },
     "verifier_args": {
-        "name": "gemini", 
-        "max_new_tokens": 800,
-        "choice_of_metric": "overall_score"
+        "name": "ensemble",
+        "choice_of_metric": "ensemble_score",
+        "clip_model_path": "ViT-B/32"
     },
     "search_args": {
         "search_method": "random",
-        "search_rounds": 8,
-        "threshold": 0.5,
-        "num_neighbors": 5
+        "search_rounds": 4
     }
 }

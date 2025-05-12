@@ -28,7 +28,7 @@ from search_algorithms import (
     RejectionSamplingSearch,
 )
 
-from drawbench_eval import compute_single_clipscore
+from drawbench_eval import compute_single_clipscore, compute_aesthetic_score
 
 # Non-configurable constants
 TOPK = 3  # Always selecting the top-1 noise for the next round
@@ -164,7 +164,7 @@ def sample(
     # Add rejection sampling search filtering
     search_method = search_args.get("search_method", "random")
     if search_method == "rejection":
-        acceptance_threshold = config["search_args"].get("initial_threshold", 0.5)
+        acceptance_threshold = config["search_args"].get("initial_threshold", 0.25)
         accepted_samples = [
             res for res in results
             if res[choice_of_metric] >= acceptance_threshold
@@ -272,7 +272,7 @@ def main():
 
         vae = AutoencoderKLWan.from_pretrained(pipeline_name, subfolder="vae", torch_dtype=torch.float32)
         fp_kwargs.update({"vae": vae})
-    pipe = DiffusionPipeline.from_pretrained(**fp_kwargs, local_files_only=True) #IF APPLICABLE!
+    pipe = DiffusionPipeline.from_pretrained(**fp_kwargs)
     if not config.get("use_low_gpu_vram", False):
         pipe = pipe.to("cuda:0")
     pipe.set_progress_bar_config(disable=True)
@@ -316,7 +316,7 @@ def main():
     # In your main function:
     search_method = config["search_args"].get("search_method", "random")
     search_algo = get_search_algorithm(search_method, config)
-    
+
     all_nfe_data = {}
 
     # === Main loop: For each prompt and each search round ===
@@ -325,6 +325,36 @@ def main():
         previous_data = None
         counting_hook.counter = 0
         all_nfe_data[prompt] = {}
+
+        baseline_noise = get_noises(
+            max_seed=MAX_SEED,
+            num_samples=1,
+            dtype=torch_dtype,
+            fn=get_latent_prep_fn(pipeline_name),
+            **config["pipeline_call_args"],
+        )
+        baseline_datapoint = sample(
+            noises=baseline_noise,
+            prompt=prompt,
+            search_round=0,  # Mark as baseline round
+            pipe=pipe,
+            verifier=verifier,
+            topk=1,
+            root_dir=output_dir,
+            config=config,
+        )
+
+        # Record baseline metrics
+        baseline_nfe = counting_hook.counter
+        all_nfe_data[prompt][0] = {
+            "NFE": str(baseline_nfe),
+            "clip_score": str(compute_single_clipscore(baseline_datapoint["best_img_path"], prompt)),
+            "aesthetic_score": str(compute_aesthetic_score(baseline_datapoint["best_img_path"])),
+            "ensemble_score": str(baseline_datapoint["best_score"])
+        }
+
+        previous_data = baseline_datapoint  # Use baseline as starting point
+
         for search_round in range(1, config["search_args"]["search_rounds"] + 1):
             print(f"\n=== Prompt: {prompt} | Round: {search_round} ===")
 
@@ -356,6 +386,9 @@ def main():
             all_nfe_data[prompt][search_round] = {}
             all_nfe_data[prompt][search_round]["NFE"] = str(counting_hook.counter)
             all_nfe_data[prompt][search_round]["clip_score"] = str(compute_single_clipscore(datapoint["best_img_path"], prompt))
+            all_nfe_data[prompt][search_round]["aesthetic_score"] = str(compute_aesthetic_score(datapoint["best_img_path"]))
+            all_nfe_data[prompt][search_round]["ensemble_score"] = str(datapoint["best_score"])
+
             previous_data = datapoint
             print(all_nfe_data)
             with open(os.path.join(output_dir, "all_nfe_data.json"), "w") as f:

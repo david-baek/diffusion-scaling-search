@@ -1,21 +1,19 @@
 {
-    "pretrained_model_name_or_path": "/home/gridsan/asreenivasan/diffusion-scaling-search/stable-diffusion-v1-5",
+    "pretrained_model_name_or_path": "stable-diffusion-v1-5/stable-diffusion-v1-5",
     "torch_dtype": "fp16",
     "pipeline_call_args": {
         "height": 512,
         "width": 512
     },
     "verifier_args": {
-        "name": "laion_aesthetic",
-        "choice_of_metric": "laion_aesthetic_score"
+        "name": "gemini",
+        "max_new_tokens": 800,
+        "choice_of_metric": "overall_score"
     },
     "search_args": {
-        "search_method": "rejection",
+        "search_method": "evolutionary",
         "search_rounds": 5,
-        "initial_std": 0.5,
-        "min_std": 0.25,
-        "initial_threshold": 0.25,
-        "adaptation_window": 5,
-        "num_samples": 10
+        "threshold": 0.95,
+        "num_neighbors": 4
     }
 }
