@@ -6,7 +6,7 @@
         "width": 512
     },
     "verifier_args": {
-        "name": "gemini", 
+        "name": "gemini",
         "max_new_tokens": 800,
         "choice_of_metric": "overall_score"
     },
