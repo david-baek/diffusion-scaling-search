@@ -25,6 +25,7 @@ from search_algorithms import (
     RandomSearch,
     ZeroOrderSearch,
     EvolutionarySearch,
+    EvolutionarySearchAdvanced,
     RejectionSamplingSearch,
 )
 
@@ -243,7 +244,7 @@ def sample_with_cache(
             serialize_artifacts(images_info, prompt, search_round, root_dir, datapoint_new, **export_args)
         else:
             print("Skipping serialization as there was no improvement in this round.")
-    elif search_method in ["random", "evolutionary", "rejection"]:
+    elif search_method in ["random", "evolutionary", "evolutionary_adv", "rejection"]:
         datapoint_new = datapoint.copy()
         datapoint_new.pop("top10_noise", None)
         serialize_artifacts(images_info, prompt, search_round, root_dir, datapoint_new, **export_args)
@@ -335,6 +336,8 @@ def main():
             return ZeroOrderSearch(config)
         elif search_method == "evolutionary":
             return EvolutionarySearch(config)
+        elif search_method == "evolutionary_adv":
+            return EvolutionarySearchAdvanced(config)
         elif search_method == "rejection":
             return RejectionSamplingSearch(config)
         else:
@@ -388,8 +391,10 @@ def main():
 
         for search_round in range(1, config["search_args"]["search_rounds"] + 1):
             print(f"\n=== Prompt: {prompt} | Round: {search_round} ===")
-
-            if search_method in ["random", "evolutionary"]:
+      
+            # Create a fresh search_algo for each round
+            search_algo = get_search_algorithm(search_method, config)
+            if search_method in ["random", "evolutionary", "evolutionary_adv"]:
                 search_algo.config["num_samples"] = 2 ** search_round
             elif search_method == "rejection":
                 search_algo.config["num_samples"] = config["search_args"].get("num_samples", 10)
@@ -600,7 +605,7 @@ def main():
                     serialize_artifacts(images_info_for_verification, prompt, search_round, output_dir, datapoint_new, **export_args)
                 else:
                     print("Skipping serialization as there was no improvement in this round.")
-            elif search_method in ["random", "evolutionary", "rejection"]:
+            elif search_method in ["random", "evolutionary", "evolutionary_adv", "rejection"]:
                 datapoint_new = datapoint.copy()
                 datapoint_new.pop("top10_noise", None)
                 serialize_artifacts(images_info_for_verification, prompt, search_round, output_dir, datapoint_new, **export_args)
