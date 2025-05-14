@@ -25,6 +25,7 @@ from search_algorithms import (
     RandomSearch,
     ZeroOrderSearch,
     EvolutionarySearch,
+    EvolutionarySearchAdvanced
 )
 
 from drawbench_eval import compute_single_clipscore
@@ -212,7 +213,7 @@ def sample_with_cache(
             serialize_artifacts(images_info, prompt, search_round, root_dir, datapoint_new, **export_args)
         else:
             print("Skipping serialization as there was no improvement in this round.")
-    elif search_method == "random" or search_method == "evolutionary":
+    elif search_method == "random" or search_method == "evolutionary" or search_method == "evolutionary_adv":
         datapoint_new = datapoint.copy()
         datapoint_new.pop("top10_noise", None)
         serialize_artifacts(images_info, prompt, search_round, root_dir, datapoint_new, **export_args)
@@ -299,6 +300,8 @@ def main():
             return ZeroOrderSearch(config)
         elif search_method == "evolutionary":
             return EvolutionarySearch(config)
+        elif search_method == "evolutionary_adv":
+            return EvolutionarySearchAdvanced(config)
         else:
             raise ValueError(f"Unsupported search method: {search_method}")
 
@@ -322,7 +325,7 @@ def main():
             
             # Create a fresh search_algo for each round
             search_algo = get_search_algorithm(search_method, config)
-            if search_method == "random" or search_method == "evolutionary":
+            if search_method == "random" or search_method == "evolutionary" or search_method == "evolutionary_adv":
                 search_algo.config["num_samples"] = 2 ** search_round
             else:
                 search_algo.config["num_samples"] = 1
@@ -531,7 +534,7 @@ def main():
                     serialize_artifacts(images_info_for_verification, prompt, search_round, output_dir, datapoint_new, **export_args)
                 else:
                     print("Skipping serialization as there was no improvement in this round.")
-            elif search_method == "random" or search_method == "evolutionary":
+            elif search_method == "random" or search_method == "evolutionary" or search_method == "evolutionary_adv":
                 datapoint_new = datapoint.copy()
                 datapoint_new.pop("top10_noise", None)
                 serialize_artifacts(images_info_for_verification, prompt, search_round, output_dir, datapoint_new, **export_args)

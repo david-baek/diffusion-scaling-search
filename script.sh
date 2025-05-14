@@ -3,7 +3,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH -n 16
 
-export GEMINI_API_KEY=YOUR_API_KEY_HERE
+export CUDA_VISIBLE_DEVICES=5
+export GEMINI_API_KEY=AIzaSyB9KFR3xYXteXK8Nbe51WlC8hYagR4fRNM
 
 python main.py \
-  --num_prompts=1
+  --num_prompts=100

@@ -111,7 +111,7 @@ def _validate_verifier_args(config):
 def _validate_search_args(config):
     search_args = config["search_args"]
     search_method = search_args["search_method"]
-    supported_search_methods = ["random", "zero-order", "evolutionary"]
+    supported_search_methods = ["random", "zero-order", "evolutionary", "evolutionary_adv"]
 
     assert (
         search_method in supported_search_methods
