@@ -25,10 +25,11 @@ from search_algorithms import (
     RandomSearch,
     ZeroOrderSearch,
     EvolutionarySearch,
-    EvolutionarySearchAdvanced
+    EvolutionarySearchAdvanced,
+    RejectionSamplingSearch,
 )
 
-from drawbench_eval import compute_single_clipscore
+from drawbench_eval import compute_single_clipscore, compute_aesthetic_score
 
 # Non-configurable constants
 TOPK = 3  # Always selecting the top-1 noise for the next round
@@ -61,6 +62,19 @@ def sample_with_cache(
     choice_of_metric = verifier_args.get("choice_of_metric", None)
     verifier_to_use = verifier_args.get("name", "gemini")
     search_args = config.get("search_args", None)
+
+    datapoint = {
+        "prompt": prompt,
+        "search_round": search_round,
+        "num_noises": len(noises),
+        "best_noise_seed": None,
+        "best_noise": None,
+        "best_score": None,
+        "top10_noise": [],
+        "choice_of_metric": choice_of_metric,
+        "best_img_path": "",
+        "acceptance_rate": 0.0  # Add default value
+    }
 
     images_for_prompt = []
     noises_used = []
@@ -176,7 +190,24 @@ def sample_with_cache(
             return x[choice_of_metric]["score"]
         return x[choice_of_metric]
 
-    sorted_list = sorted(results, key=lambda x: f(x), reverse=True)
+    # Add rejection sampling search filtering
+    search_method = search_args.get("search_method", "random")
+    if search_method == "rejection":
+        acceptance_threshold = config["search_args"].get("initial_threshold", 0.25)
+        accepted_samples = [
+            res for res in results
+            if res[choice_of_metric] >= acceptance_threshold
+        ]
+        acceptance_rate = len(accepted_samples)/len(results) if results else 0
+        datapoint["acceptance_rate"] = acceptance_rate
+        if accepted_samples:
+            sorted_list = sorted(accepted_samples, key=lambda x: f(x), reverse=True)
+        else:
+            # Fallback to best of rejected samples
+            sorted_list = sorted(results, key=lambda x: f(x), reverse=True)
+    else:
+        sorted_list = sorted(results, key=lambda x: f(x), reverse=True)
+
     topk_scores = sorted_list[:topk]
 
     # Print debug information.
@@ -213,7 +244,7 @@ def sample_with_cache(
             serialize_artifacts(images_info, prompt, search_round, root_dir, datapoint_new, **export_args)
         else:
             print("Skipping serialization as there was no improvement in this round.")
-    elif search_method == "random" or search_method == "evolutionary" or search_method == "evolutionary_adv":
+    elif search_method in ["random", "evolutionary", "evolutionary_adv", "rejection"]:
         datapoint_new = datapoint.copy()
         datapoint_new.pop("top10_noise", None)
         serialize_artifacts(images_info, prompt, search_round, root_dir, datapoint_new, **export_args)
@@ -277,12 +308,17 @@ def main():
     
     # ----- NFE Counter using Forward Hook -----
     def counting_hook(module, input, output):
-        counting_hook.counter += 1
+        # Only count UNet forward passes during actual image generation
+        if not hasattr(counting_hook, "sampling_phase"):
+            counting_hook.counter += 1
         
     counting_hook.counter = 0
 
     # Register the hook on the UNet inside the pipeline.
-    hook_handle = pipe.unet.register_forward_hook(counting_hook)
+    if hasattr(pipe, 'unet'):
+        hook_handle = pipe.unet.register_forward_hook(counting_hook)
+    elif hasattr(pipe, 'transformer'):
+        hook_handle = pipe.transformer.register_forward_hook(counting_hook)
 
     # === Load verifier model ===
     verifier_args = config["verifier_args"]
@@ -302,11 +338,15 @@ def main():
             return EvolutionarySearch(config)
         elif search_method == "evolutionary_adv":
             return EvolutionarySearchAdvanced(config)
+        elif search_method == "rejection":
+            return RejectionSamplingSearch(config)
         else:
             raise ValueError(f"Unsupported search method: {search_method}")
 
     # In your main function:
     search_method = config["search_args"].get("search_method", "random")
+    search_algo = get_search_algorithm(search_method, config)
+
     all_nfe_data = {}
 
     # === Main loop: For each prompt and each search round ===
@@ -320,16 +360,47 @@ def main():
         processed_noise_cache = {}  # seed -> (image, noise, filename)
         all_accumulated_noises = {}  # All noise candidates across all rounds
 
+        baseline_noise = get_noises(
+            max_seed=MAX_SEED,
+            num_samples=1,
+            dtype=torch_dtype,
+            fn=get_latent_prep_fn(pipeline_name),
+            **config["pipeline_call_args"],
+        )
+        baseline_datapoint = sample_with_cache(
+            noises=baseline_noise,
+            prompt=prompt,
+            search_round=0,  # Mark as baseline round
+            pipe=pipe,
+            verifier=verifier,
+            topk=1,
+            root_dir=output_dir,
+            config=config,
+        )
+
+        # Record baseline metrics
+        baseline_nfe = counting_hook.counter
+        all_nfe_data[prompt][0] = {
+            "NFE": str(baseline_nfe),
+            "clip_score": str(compute_single_clipscore(baseline_datapoint["best_img_path"], prompt)),
+            "aesthetic_score": str(compute_aesthetic_score(baseline_datapoint["best_img_path"])),
+            "ensemble_score": str(baseline_datapoint["best_score"])
+        }
+
+        previous_data = baseline_datapoint  # Use baseline as starting point
+
         for search_round in range(1, config["search_args"]["search_rounds"] + 1):
             print(f"\n=== Prompt: {prompt} | Round: {search_round} ===")
-            
+      
             # Create a fresh search_algo for each round
             search_algo = get_search_algorithm(search_method, config)
-            if search_method == "random" or search_method == "evolutionary" or search_method == "evolutionary_adv":
+            if search_method in ["random", "evolutionary", "evolutionary_adv"]:
                 search_algo.config["num_samples"] = 2 ** search_round
+            elif search_method == "rejection":
+                search_algo.config["num_samples"] = config["search_args"].get("num_samples", 10)
             else:
                 search_algo.config["num_samples"] = 1
-                
+
             search_algo.config["torch_dtype"] = torch_dtype
             search_algo.config["pipeline_name"] = pipeline_name
             
@@ -534,25 +605,25 @@ def main():
                     serialize_artifacts(images_info_for_verification, prompt, search_round, output_dir, datapoint_new, **export_args)
                 else:
                     print("Skipping serialization as there was no improvement in this round.")
-            elif search_method == "random" or search_method == "evolutionary" or search_method == "evolutionary_adv":
+            elif search_method in ["random", "evolutionary", "evolutionary_adv", "rejection"]:
                 datapoint_new = datapoint.copy()
                 datapoint_new.pop("top10_noise", None)
                 serialize_artifacts(images_info_for_verification, prompt, search_round, output_dir, datapoint_new, **export_args)
 
             # Update NFE data
             print(f"Total function evaluations (NFEs) so far: {counting_hook.counter}")
-            all_nfe_data[prompt][search_round] = {
-                "NFE": str(counting_hook.counter),
-                "clip_score": str(compute_single_clipscore(datapoint["best_img_path"], prompt))
-            }
-            
+            all_nfe_data[prompt][search_round] = {}
+            all_nfe_data[prompt][search_round]["NFE"] = str(counting_hook.counter)
+            all_nfe_data[prompt][search_round]["clip_score"] = str(compute_single_clipscore(datapoint["best_img_path"], prompt))
+            all_nfe_data[prompt][search_round]["aesthetic_score"] = str(compute_aesthetic_score(datapoint["best_img_path"]))
+            all_nfe_data[prompt][search_round]["ensemble_score"] = str(datapoint["best_score"])
+
+            previous_data = datapoint
+            print(all_nfe_data)
+
             # Save NFE data
             with open(os.path.join(output_dir, "all_nfe_data.json"), "w") as f:
                 json.dump(all_nfe_data, f, indent=4)
-                
-            # Update previous_data for next round
-            previous_data = datapoint
-    
 
 if __name__ == "__main__":
     main()

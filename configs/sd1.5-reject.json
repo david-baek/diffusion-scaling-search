@@ -11,7 +11,10 @@
         "clip_model_path": "ViT-B/32"
     },
     "search_args": {
-        "search_method": "random",
-        "search_rounds": 4
+        "search_method": "rejection",
+        "search_rounds": 5,
+        "noise_scale": 0.6685106717749458,
+        "adaptation_strength": 0.19966785532061024,
+        "num_samples": 6
     }
 }

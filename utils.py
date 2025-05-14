@@ -111,7 +111,7 @@ def _validate_verifier_args(config):
 def _validate_search_args(config):
     search_args = config["search_args"]
     search_method = search_args["search_method"]
-    supported_search_methods = ["random", "zero-order", "evolutionary", "evolutionary_adv"]
+    supported_search_methods = ["random", "zero-order", "evolutionary", "evolutionary_adv", "rejection"]
 
     assert (
         search_method in supported_search_methods
@@ -376,9 +376,19 @@ def serialize_artifacts(
 
     # Save the best datapoint config as a JSON file.
     best_json_filename = datapoint["best_img_path"].replace(".png", ".json").replace(".mp4", ".json")
+
+    # Define custom JSON serializer
+    def json_serializer(obj):
+        if isinstance(obj, (torch.Tensor, np.ndarray)):
+            return obj.tolist() if hasattr(obj, 'tolist') else float(obj)
+        elif hasattr(obj, 'dtype') and np.issubdtype(obj.dtype, np.floating):
+            return float(obj)  # Convert numpy/torch float types to Python float
+        raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
     with open(best_json_filename, "w") as f:
         # Remove the noise tensor (or any non-serializable object) from the JSON.
         datapoint_copy = datapoint.copy()
         datapoint_copy.pop("best_noise", None)
-        json.dump(datapoint_copy, f, indent=4)
+        json.dump(datapoint_copy, f, indent=4, default=json_serializer)
+
     print(f"Serialized artifacts to {root_dir}.")

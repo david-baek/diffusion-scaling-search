@@ -18,11 +18,17 @@ try:
 except Exception as e:
     LAIONAestheticVerifier = None
 
+try:
+    from .ensemble_verifier import EnsembleVerifier
+except Exception as e:
+    EnsembleVerifier = None
+
 SUPPORTED_VERIFIERS = {
     "qwen": QwenVerifier if QwenVerifier else None,
     "gemini": GeminiVerifier if GeminiVerifier else None,
     "openai": OpenAIVerifier if OpenAIVerifier else None,
     "laion_aesthetic": LAIONAestheticVerifier if LAIONAestheticVerifier else None,
+    "ensemble": EnsembleVerifier if EnsembleVerifier else None,
 }
 
 SUPPORTED_METRICS = {k: getattr(v, "SUPPORTED_METRIC_CHOICES", None) for k, v in SUPPORTED_VERIFIERS.items()}
